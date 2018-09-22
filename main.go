@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"github.com/PuerkitoBio/goquery"
+	"github.com/alecthomas/chroma/formatters/html"
+	"github.com/alecthomas/chroma/lexers"
+	"github.com/alecthomas/chroma/styles"
 	"github.com/russross/blackfriday"
-	"github.com/sourcegraph/syntaxhighlight"
 	"html/template"
 	"io/ioutil"
 	"log"
@@ -19,19 +22,33 @@ func main() {
 		log.Fatal(err)
 	}
 	// convert markdown to html
-	html := blackfriday.MarkdownCommon(mdFile)
+	htmlSrc := blackfriday.MarkdownCommon(mdFile)
 	// replace code-parts with syntax-highlighted parts
-	replaced, err := replaceCodeParts(html)
+	replaced, err := replaceCodeParts(htmlSrc)
 	if err != nil {
 		log.Fatal(err)
 	}
-	// write to stdout
+	// read template
 	t, err := template.ParseFiles("./template.html")
 	if err != nil {
 		log.Fatal(err)
 	}
-	err = t.Execute(os.Stdout, struct{ Content template.HTML }{Content: template.HTML(replaced)})
-	if err != nil {
+	// write css
+	hlbuf := bytes.Buffer{}
+	hlw := bufio.NewWriter(&hlbuf)
+	formatter := html.New(html.WithClasses())
+	if err := formatter.WriteCSS(hlw, styles.MonokaiLight); err != nil {
+		log.Fatal(err)
+	}
+	hlw.Flush()
+	// write html output
+	if err := t.Execute(os.Stdout, struct {
+		Content template.HTML
+		Style   template.CSS
+	}{
+		Content: template.HTML(replaced),
+		Style:   template.CSS(hlbuf.String()),
+	}); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -42,15 +59,37 @@ func replaceCodeParts(mdFile []byte) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// find code-parts via css selector and replace them with highlighted versions
+	// find code-parts via selector and replace them with highlighted versions
+	var hlErr error
 	doc.Find("code[class*=\"language-\"]").Each(func(i int, s *goquery.Selection) {
-		oldCode := s.Text()
-		formatted, err := syntaxhighlight.AsHTML([]byte(oldCode))
-		if err != nil {
-			log.Fatal(err)
+		if hlErr != nil {
+			return
 		}
-		s.SetHtml(string(formatted))
+		class, _ := s.Attr("class")
+		lang := strings.TrimPrefix(class, "language-")
+		oldCode := s.Text()
+		lexer := lexers.Get(lang)
+		formatter := html.New(html.WithClasses())
+		iterator, err := lexer.Tokenise(nil, string(oldCode))
+		if err != nil {
+			hlErr = err
+			return
+		}
+		b := bytes.Buffer{}
+		buf := bufio.NewWriter(&b)
+		if err := formatter.Format(buf, styles.GitHub, iterator); err != nil {
+			hlErr = err
+			return
+		}
+		if err := buf.Flush(); err != nil {
+			hlErr = err
+			return
+		}
+		s.SetHtml(b.String())
 	})
+	if hlErr != nil {
+		return "", hlErr
+	}
 	new, err := doc.Html()
 	if err != nil {
 		return "", err

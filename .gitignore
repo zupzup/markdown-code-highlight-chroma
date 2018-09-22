@@ -12,3 +12,5 @@
 
 # Project-local glide cache, RE: https://github.com/Masterminds/glide/issues/736
 .glide/
+out.html
+markdown-code-highlight-chroma
